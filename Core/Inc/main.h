@@ -57,21 +57,23 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define CS_Pin              GPIO_PIN_4      /* PA4  - W5500 SPI CS        */
-#define CS_GPIO_Port        GPIOA
-#define RESET_Pin           GPIO_PIN_12     /* PA12 - OLED /RST           */
-#define RESET_GPIO_Port     GPIOA
-#define PB11_TOGGLE_Pin     GPIO_PIN_11     /* PB11 - Relay               */
+#define CS_Pin GPIO_PIN_4
+#define CS_GPIO_Port GPIOA
+#define PB11_TOGGLE_Pin GPIO_PIN_11
 #define PB11_TOGGLE_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+
+/* OLED reset pin - PA12 */
+#define RESET_Pin           GPIO_PIN_12     /* PA12 - OLED /RST           */
+#define RESET_GPIO_Port     GPIOA
 
 /* OLED SPI (SPI2) control pins */
 #define OLED_CS_Pin         GPIO_PIN_12     /* PB12 - OLED CS             */
 #define OLED_CS_GPIO_Port   GPIOB
 #define OLED_DC_Pin         GPIO_PIN_14     /* PB14 - OLED D/C            */
 #define OLED_DC_GPIO_Port   GPIOB
-#define OLED_Res_Pin        RESET_Pin       /* PA12 - OLED /RST (shared)  */
+#define OLED_Res_Pin        RESET_Pin       /* Alias for OLED reset       */
 #define OLED_Res_GPIO_Port  RESET_GPIO_Port
 
 #define OLED_RES_Pin        OLED_Res_Pin

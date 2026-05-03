@@ -1,0 +1,23 @@
+# MQTT Test Commands for STM32 Door Lock
+# Broker IP: 192.168.137.1
+# Topic: device/stm32-001/command
+
+# Test 1: Open door (compact format)
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m "{\"type\":\"DOOR\",\"action\":\"OPEN\"}"
+
+# Test 2: Open door (with spaces)
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m "{\"type\": \"DOOR\", \"action\": \"OPEN\"}"
+
+# Test 3: Set password
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m "{\"type\":\"DOOR\",\"action\":\"SET_PWD\",\"value\":\"999999\"}"
+
+# Test 4: Invalid format (missing action) - should show JSON ERROR
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m "{\"type\":\"DOOR\"}"
+
+# Test 5: LED test message (displays on OLED but no action)
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m "{\"type\":\"LED\",\"action\":\"ON\"}"
+
+# PowerShell equivalent (escape quotes differently):
+# Test 1 in PowerShell:
+mosquitto_pub -h 192.168.137.1 -t device/stm32-001/command -m '{\"type\":\"DOOR\",\"action\":\"OPEN\"}'
+

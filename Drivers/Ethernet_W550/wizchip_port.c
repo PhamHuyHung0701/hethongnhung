@@ -5,6 +5,7 @@
 #include "main.h"
 #include "wizchip_port.h"
 #include "wizchip_conf.h"
+#include "string.h"
 
 #define W5500_SPI hspi1
 #define USE_DHCP  0
@@ -12,9 +13,9 @@
 
 wiz_NetInfo netInfo = {
     .mac = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF},
-    .ip = {192, 168, 1, 10},
+    .ip = {192, 168, 137, 2},
     .sn = {255, 255, 255, 0},
-    .gw = {192, 168, 1, 1},
+    .gw = {192, 168, 137, 1},
     .dns = {8, 8, 8, 8},
 #if USE_DHCP
 	.dhcp = NETINFO_DHCP
@@ -158,3 +159,70 @@ int W5500_Init(void)
 
     return 0;
 }
+
+/* -------------------------------------------------------------------------
+ * W5500_Diag — chuyển 1 byte uint8 thành chuỗi thập phân
+ * ------------------------------------------------------------------------- */
+static void u8_to_dec(char *out, uint8_t v)
+{
+    uint8_t i = 0;
+    if (v >= 100U) { out[i++] = (char)('0' + v / 100U); v = (uint8_t)(v % 100U); }
+    if (v >= 10U || i > 0U) { out[i++] = (char)('0' + v / 10U); v = (uint8_t)(v % 10U); }
+    out[i++] = (char)('0' + v);
+    out[i]   = '\0';
+}
+
+/* Ghép "prefix" + IP[0].IP[1].IP[2].IP[3] vào buf[0..max-1] */
+static void fmt_ip(char *buf, uint8_t max, const char *prefix, const uint8_t *ip)
+{
+    char tmp[4];
+    uint8_t p = 0;
+    /* copy prefix */
+    while (*prefix && p < max - 1U) { buf[p++] = *prefix++; }
+    /* append each octet */
+    for (uint8_t o = 0; o < 4U; o++) {
+        u8_to_dec(tmp, ip[o]);
+        for (uint8_t k = 0; tmp[k] && p < max - 1U; k++) { buf[p++] = tmp[k]; }
+        if (o < 3U && p < max - 1U) { buf[p++] = '.'; }
+    }
+    buf[p] = '\0';
+}
+
+/**
+ * W5500_Diag — hiển thị chẩn đoán lên OLED qua log callback:
+ *   W5500 v:04 OK / ERR
+ *   PHY: UP / DOWN
+ *   IP: 192.168.x.x
+ *   GW: 192.168.x.x
+ */
+void W5500_Diag(void)
+{
+    char     line[24];
+    uint8_t  ver  = W5500_GetVersion();
+    uint8_t  link = PHY_LINK_OFF;
+
+    /* ---- Version ---- */
+    if (ver == 0x04U) {
+        W5500_Log("W5500 v:04 OK");
+    } else {
+        line[0] = '\0';
+        /* manually build "W5500 v:XX ERR" */
+        memcpy(line, "W5500 v:", 8);
+        u8_to_dec(line + 8, ver);
+        memcpy(line + 8 + strlen(line + 8), " ERR", 5);
+        W5500_Log(line);
+    }
+
+    /* ---- PHY link ---- */
+    if (ctlwizchip(CW_GET_PHYLINK, &link) == 0) {
+        W5500_Log((link == PHY_LINK_ON) ? "PHY: UP" : "PHY: DOWN");
+    }
+
+    /* ---- Network info (dùng struct netInfo đã cấu hình) ---- */
+    fmt_ip(line, sizeof(line), "IP:", netInfo.ip);
+    W5500_Log(line);
+
+    fmt_ip(line, sizeof(line), "GW:", netInfo.gw);
+    W5500_Log(line);
+}
+

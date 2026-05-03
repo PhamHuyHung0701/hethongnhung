@@ -26,16 +26,17 @@
 /* USER CODE BEGIN PD */
 
 /* Keypad rows  (OUTPUT): PA0, PA1, PA2, PA3  */
-/* Keypad cols  (INPUT):  PA8, PA9, PA10, PA11 */
+/* Keypad cols  (INPUT):  PA8, PA9, PB5, PA11 */
 #define KP_ROW0   GPIO_PIN_0
 #define KP_ROW1   GPIO_PIN_1
 #define KP_ROW2   GPIO_PIN_2
 #define KP_ROW3   GPIO_PIN_3
 #define KP_COL0   GPIO_PIN_8
 #define KP_COL1   GPIO_PIN_9
-#define KP_COL2   GPIO_PIN_10
+#define KP_COL2   GPIO_PIN_5      /* Changed from PA10 to PB5 */
 #define KP_COL3   GPIO_PIN_11
 #define KP_PORT   GPIOA
+#define KP_COL2_PORT GPIOB        /* Separate port for COL2 */
 
 /* Relay on PB11 — SET=locked, RESET=unlocked (active-LOW) */
 #define RELAY_PORT      PB11_TOGGLE_GPIO_Port
@@ -98,6 +99,8 @@ static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
 
 /* USER CODE BEGIN PFP */
+static void MQTT_OnDoorOpen(void);
+static void MQTT_OnPassword(const char *new_pwd);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -160,7 +163,7 @@ static void OLED_LogClear(void)
  * Keypad 4x4
  *
  *        COL0   COL1   COL2   COL3
- *        PA8    PA9    PA10   PA11
+ *        PA8    PA9    PB5    PA11
  * ROW0  PA0  [ 1 ]  [ 2 ]  [ 3 ]  [ A ]
  * ROW1  PA1  [ 4 ]  [ 5 ]  [ 6 ]  [ B ]
  * ROW2  PA2  [ 7 ]  [ 8 ]  [ 9 ]  [ C ]
@@ -187,11 +190,17 @@ static void Keypad_Init(void)
     HAL_GPIO_Init(KP_PORT, &g);
     HAL_GPIO_WritePin(KP_PORT, KP_ROW0 | KP_ROW1 | KP_ROW2 | KP_ROW3, GPIO_PIN_SET);
 
-    /* Cols — input pull-up */
-    g.Pin  = KP_COL0 | KP_COL1 | KP_COL2 | KP_COL3;
+    /* Cols PA8, PA9, PA11 — input pull-up */
+    g.Pin  = KP_COL0 | KP_COL1 | KP_COL3;
     g.Mode = GPIO_MODE_INPUT;
     g.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(KP_PORT, &g);
+
+    /* Col2 PB5 — input pull-up (separate port) */
+    g.Pin  = KP_COL2;
+    g.Mode = GPIO_MODE_INPUT;
+    g.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(KP_COL2_PORT, &g);
 }
 
 static char Keypad_Scan(void)
@@ -202,13 +211,16 @@ static char Keypad_Scan(void)
         HAL_Delay(1);
         for (uint8_t c = 0U; c < 4U; c++)
         {
-            if (HAL_GPIO_ReadPin(KP_PORT, KP_COLS[c]) == GPIO_PIN_RESET)
+            /* Select correct port for each column */
+            GPIO_TypeDef *col_port = (c == 2U) ? KP_COL2_PORT : KP_PORT;
+
+            if (HAL_GPIO_ReadPin(col_port, KP_COLS[c]) == GPIO_PIN_RESET)
             {
                 HAL_Delay(20);  /* debounce */
-                if (HAL_GPIO_ReadPin(KP_PORT, KP_COLS[c]) == GPIO_PIN_RESET)
+                if (HAL_GPIO_ReadPin(col_port, KP_COLS[c]) == GPIO_PIN_RESET)
                 {
                     /* wait for key release */
-                    while (HAL_GPIO_ReadPin(KP_PORT, KP_COLS[c]) == GPIO_PIN_RESET)
+                    while (HAL_GPIO_ReadPin(col_port, KP_COLS[c]) == GPIO_PIN_RESET)
                     {
                         HAL_Delay(1);
                     }
@@ -342,8 +354,99 @@ static void MQTT_OnDoorOpen(void)
 /** Nhận "door/password" → đổi mật khẩu sang payload */
 static void MQTT_OnPassword(const char *new_pwd)
 {
-    OLED_LogMessage("MQTT: New pwd");
+    char line[OLED_LINE_LEN + 1U];
+
+    OLED_LogClear();
+    OLED_LogMessage("MQTT: Set pwd");
+    line[0] = '\0';
+    strncat(line, "New: ", OLED_LINE_LEN);
+    strncat(line, new_pwd, OLED_LINE_LEN - 5U);
+    OLED_LogMessage(line);
+    HAL_Delay(2000);  /* Hiển thị 2s cho dễ đọc */
+
     DoorLock_SetPassword(new_pwd);
+}
+
+/**
+ * Gọi cho MỌI message MQTT nhận được — hiển thị lên OLED.
+ * Hỗ trợ 2 format:
+ *   1. Text: "OPEN" hoặc "SET_PWD:111111"
+ *   2. JSON: {"type":"DOOR","action":"OPEN"}
+ */
+static void MQTT_OnMessage(const char *type, const char *action, const char *value)
+{
+    char line[OLED_LINE_LEN + 1U];
+
+    OLED_LogClear();
+    OLED_LogMessage("--- MQTT msg ---");
+
+    /* Nếu type rỗng → có thể là text format, không phải JSON */
+    if (type[0] == '\0' && action[0] == '\0') {
+        /* Hiển thị message nhận được */
+        OLED_LogMessage("Text mode:");
+        if (value[0] != '\0') {
+            OLED_LogMessage(value);
+        }
+
+        HAL_Delay(1000);  /* Giảm delay để phản hồi nhanh hơn */
+
+        /* Parse text commands */
+        if (strcmp(value, "OPEN") == 0) {
+            OLED_LogMessage("-> Opening door");
+            HAL_Delay(1000);
+            MQTT_OnDoorOpen();
+            return;
+        }
+
+        /* SET_PWD:password format */
+        if (strncmp(value, "SET_PWD:", 8) == 0) {
+            const char *pwd = value + 8;  /* skip "SET_PWD:" */
+            if (pwd[0] != '\0') {
+                OLED_LogMessage("-> Changing pwd");
+                HAL_Delay(500);
+                MQTT_OnPassword(pwd);
+                return;
+            }
+        }
+
+        /* Không nhận dạng được */
+        OLED_LogMessage("Unknown cmd!");
+        OLED_LogMessage("Use: OPEN");
+        OLED_LogMessage("Or: SET_PWD:pass");
+        HAL_Delay(3000);  /* Hiển thị lỗi 3s */
+        OLED_LogClear();
+        OLED_LogMessage("Enter password:");
+        return;
+    }
+
+    /* JSON format - hiển thị parsed values */
+    line[0] = '\0';
+    strncat(line, "T:", OLED_LINE_LEN);
+    strncat(line, type, OLED_LINE_LEN - 2U);
+    OLED_LogMessage(line);
+
+    line[0] = '\0';
+    strncat(line, "A:", OLED_LINE_LEN);
+    strncat(line, action, OLED_LINE_LEN - 2U);
+    OLED_LogMessage(line);
+
+    if (value[0] != '\0') {
+        line[0] = '\0';
+        strncat(line, "V:", OLED_LINE_LEN);
+        strncat(line, value, OLED_LINE_LEN - 2U);
+        OLED_LogMessage(line);
+    }
+
+    HAL_Delay(1500);
+
+    /* Xử lý JSON commands */
+    if (strcmp(type, "DOOR") == 0) {
+        if (strcmp(action, "OPEN") == 0) {
+            MQTT_OnDoorOpen();
+        } else if (strcmp(action, "SET_PWD") == 0 && value[0] != '\0') {
+            MQTT_OnPassword(value);
+        }
+    }
 }
 
 /* USER CODE END 0 */
@@ -365,11 +468,9 @@ int main(void)
 
     /* USER CODE BEGIN SysInit */
     /* USER CODE END SysInit */
-
     MX_GPIO_Init();
     MX_SPI1_Init();
     MX_SPI2_Init();
-
     /* USER CODE BEGIN 2 */
 
     /* OLED */
@@ -380,10 +481,14 @@ int main(void)
 
     /* W5500 */
     W5500_SetLogCallback(OLED_LogMessage);
-    if (W5500_Init() != 0)
+    if (W5500_Init() != 0) {
         OLED_LogMessage("W5500 FAIL");
-    else
+        while (1) { HAL_Delay(100); }  /* dừng — không chuyển màn */
+    } else {
         OLED_LogMessage("W5500 OK");
+        W5500_Diag();
+        HAL_Delay(3000);   /* hiển thị 3s rồi tiếp tục */
+    }
 
     /* Keypad */
     Keypad_Init();
@@ -394,7 +499,7 @@ int main(void)
     /* MQTT — kết nối tới Mosquitto broker, đăng ký 2 topics:
      *   door/open     → mở cửa
      *   door/password → đổi mật khẩu */
-    MQTT_Init(MQTT_OnDoorOpen, MQTT_OnPassword);
+    MQTT_Init(MQTT_OnDoorOpen, MQTT_OnPassword, MQTT_OnMessage);
 
     /* USER CODE END 2 */
 
@@ -547,11 +652,17 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_Init(KP_PORT, &GPIO_InitStruct);
     HAL_GPIO_WritePin(KP_PORT, KP_ROW0 | KP_ROW1 | KP_ROW2 | KP_ROW3, GPIO_PIN_SET);
 
-    /* ---- Keypad cols PA8-PA11 — input pull-up --------------------------- */
-    GPIO_InitStruct.Pin  = KP_COL0 | KP_COL1 | KP_COL2 | KP_COL3;
+    /* ---- Keypad cols PA8, PA9, PA11 — input pull-up --------------------- */
+    GPIO_InitStruct.Pin  = KP_COL0 | KP_COL1 | KP_COL3;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(KP_PORT, &GPIO_InitStruct);
+
+    /* ---- Keypad col2 PB5 — input pull-up -------------------------------- */
+    GPIO_InitStruct.Pin  = KP_COL2;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(KP_COL2_PORT, &GPIO_InitStruct);
 }
 
 /* USER CODE BEGIN 4 */

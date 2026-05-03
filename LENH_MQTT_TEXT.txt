@@ -1,0 +1,96 @@
+# ===================================================================
+# MQTT Commands - TEXT FORMAT (ĐƠN GIẢN)
+# ===================================================================
+
+Topic: device/stm32-001/command
+
+# -------------------------------------------------------------------
+# 1. MỞ CỬA - TEXT FORMAT
+# -------------------------------------------------------------------
+
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m "OPEN"
+
+# -------------------------------------------------------------------
+# 2. ĐỔI PASSWORD - TEXT FORMAT
+# -------------------------------------------------------------------
+
+# Đổi password thành 111111
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m "SET_PWD:111111"
+
+# Đổi password thành 999999
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m "SET_PWD:999999"
+
+# Đổi password thành 123456 (default)
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m "SET_PWD:123456"
+
+
+# ===================================================================
+# MQTT Commands - JSON FORMAT (VẪN HOẠT ĐỘNG)
+# ===================================================================
+
+# -------------------------------------------------------------------
+# 1. MỞ CỬA - JSON FORMAT
+# -------------------------------------------------------------------
+
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m '{"type":"DOOR","action":"OPEN"}'
+
+# -------------------------------------------------------------------
+# 2. ĐỔI PASSWORD - JSON FORMAT
+# -------------------------------------------------------------------
+
+docker exec mosquitto mosquitto_pub -h localhost -t device/stm32-001/command -m '{"type":"DOOR","action":"SET_PWD","value":"111111"}'
+
+
+# ===================================================================
+# SO SÁNH
+# ===================================================================
+
+TEXT FORMAT (đơn giản):
+  ✅ Gửi: OPEN
+  ✅ Gửi: SET_PWD:111111
+  ✅ Ngắn gọn, dễ nhớ
+  ✅ Không cần escape quotes
+
+JSON FORMAT (chuẩn):
+  ✅ Gửi: {"type":"DOOR","action":"OPEN"}
+  ✅ Gửi: {"type":"DOOR","action":"SET_PWD","value":"111111"}
+  ✅ Structured, mở rộng dễ
+  ⚠️  Cần escape quotes trong shell
+
+
+# ===================================================================
+# HIỂN THỊ TRÊN OLED
+# ===================================================================
+
+Khi gửi TEXT "OPEN":
+  --- MQTT msg ---
+  Text mode:
+  OPEN
+  -> Opening door
+  (sau đó mở cửa 3s)
+
+Khi gửi TEXT "SET_PWD:111111":
+  --- MQTT msg ---
+  Text mode:
+  SET_PWD:111111
+  -> Changing pwd
+
+  (Clear màn hình)
+  MQTT: Set pwd
+  New: 111111
+
+  (Clear màn hình)
+  Password changed
+
+  (Clear màn hình)
+  Enter password:
+
+Khi gửi JSON:
+  --- MQTT msg ---
+  T:DOOR
+  A:OPEN
+  V:
+
+# Cả 2 format đều hoạt động đầy đủ!
+# Text format hiển thị message nhiều hơn để dễ theo dõi
+
