@@ -243,6 +243,21 @@ static char Keypad_Scan(void)
 static void DoorLock_Init(void)
 {
     DOOR_CLOSE();
+
+    /* ---- Startup self-test: xung cả 2 pin 1 giây ---- */
+    OLED_LogClear();
+    OLED_LogMessage("Self-test...");
+    OLED_LogMessage("PB4 & PB11 ON");
+    HAL_GPIO_WritePin(LOCK_GPIO_Port,  LOCK_Pin,         GPIO_PIN_SET);   /* PB4  HIGH */
+    HAL_GPIO_WritePin(PB11_TOGGLE_GPIO_Port, PB11_TOGGLE_Pin, GPIO_PIN_RESET); /* PB11 LOW  */
+    HAL_Delay(1000);
+    HAL_GPIO_WritePin(LOCK_GPIO_Port,  LOCK_Pin,         GPIO_PIN_RESET); /* PB4  LOW  */
+    HAL_GPIO_WritePin(PB11_TOGGLE_GPIO_Port, PB11_TOGGLE_Pin, GPIO_PIN_SET);   /* PB11 HIGH */
+    OLED_LogMessage("Self-test done");
+    HAL_Delay(500);
+    /* -------------------------------------------------- */
+
+    DOOR_CLOSE();
     OLED_LogClear();
     OLED_LogMessage("== Door Lock ==");
     OLED_LogMessage("Enter password:");
@@ -643,6 +658,10 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOD_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    /* ---- Giải phóng PB4 (NJTRST) khỏi JTAG để dùng làm GPIO ----------- */
+    __HAL_RCC_AFIO_CLK_ENABLE();
+    MODIFY_REG(AFIO->MAPR, AFIO_MAPR_SWJ_CFG, AFIO_MAPR_SWJ_CFG_NOJNTRST);
 
     /* ---- Default output levels ----------------------------------------- */
     /* PA4  = W5500 CS   → HIGH (deasserted)
