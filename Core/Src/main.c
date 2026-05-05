@@ -112,6 +112,12 @@ static void MQTT_OnPassword(const char *new_pwd);
 /* ===========================================================================
  * OLED log helpers
  * ===========================================================================*/
+
+/**
+ * @brief  Render toàn bộ nội dung mảng oled_lines lên màn hình OLED.
+ * @detail Xóa màn hình, vẽ từng dòng trong oled_lines[] với font Font_7x10,
+ *         sau đó gọi ssd1306_UpdateScreen() để cập nhật phần cứng.
+ */
 static void OLED_LogRender(void)
 {
     ssd1306_Fill(Black);
@@ -123,6 +129,12 @@ static void OLED_LogRender(void)
     ssd1306_UpdateScreen();
 }
 
+/**
+ * @brief  Đẩy một dòng mới vào cuối mảng oled_lines[].
+ * @detail Dịch tất cả các dòng hiện tại lên 1 vị trí (dòng 0 bị mất),
+ *         ghi text mới vào dòng cuối cùng (OLED_LINES-1).
+ * @param  text  Chuỗi cần hiển thị (tối đa OLED_LINE_LEN ký tự).
+ */
 static void OLED_LogPushLine(const char *text)
 {
     for (uint8_t i = 0U; i < (OLED_LINES - 1U); i++)
@@ -133,6 +145,12 @@ static void OLED_LogPushLine(const char *text)
     oled_lines[OLED_LINES - 1U][OLED_LINE_LEN] = '\0';
 }
 
+/**
+ * @brief  Hiển thị một chuỗi thông báo lên OLED theo kiểu scroll.
+ * @detail Tự động ngắt dòng khi gặp '\n'/'\r' hoặc khi đạt OLED_LINE_LEN.
+ *         Mỗi đoạn được đẩy qua OLED_LogPushLine() rồi render lại màn hình.
+ * @param  message  Chuỗi cần hiển thị (có thể chứa nhiều dòng).
+ */
 static void OLED_LogMessage(const char *message)
 {
     char    chunk[OLED_LINE_LEN + 1U];
@@ -155,6 +173,10 @@ static void OLED_LogMessage(const char *message)
     if (oled_ready != 0U) { OLED_LogRender(); }
 }
 
+/**
+ * @brief  Xóa toàn bộ nội dung màn hình OLED và bộ đệm oled_lines[].
+ * @detail Reset memset toàn bộ mảng về 0, sau đó render màn hình trắng.
+ */
 static void OLED_LogClear(void)
 {
     memset(oled_lines, 0, sizeof(oled_lines));
@@ -172,6 +194,13 @@ static void OLED_LogClear(void)
  * ROW2  PA2  [ 7 ]  [ 8 ]  [ 9 ]  [ C ]
  * ROW3  PA3  [ * ]  [ 0 ]  [ # ]  [ D ]
  * ===========================================================================*/
+
+/**
+ * @brief  Khởi tạo GPIO cho bàn phím 4x4.
+ * @detail - ROW0-ROW3 (PA0-PA3): output push-pull, mức mặc định HIGH.
+ *         - COL0,COL1,COL3 (PA8,PA9,PA11): input pull-up trên GPIOA.
+ *         - COL2 (PB5): input pull-up trên GPIOB (chân đặc biệt khác port).
+ */
 static const uint16_t KP_ROWS[4] = { KP_ROW0, KP_ROW1, KP_ROW2, KP_ROW3 };
 static const uint16_t KP_COLS[4] = { KP_COL0, KP_COL1, KP_COL2, KP_COL3 };
 static const char     KP_MAP[4][4] = {
@@ -206,6 +235,13 @@ static void Keypad_Init(void)
     HAL_GPIO_Init(KP_COL2_PORT, &g);
 }
 
+/**
+ * @brief  Quét bàn phím 4x4 và trả về ký tự phím đang được nhấn.
+ * @detail Lần lượt kéo từng ROW xuống LOW, đọc 4 cột (chú ý COL2 trên GPIOB).
+ *         Khi phát hiện cột LOW: debounce 20ms, chờ nhả phím, trả về ký tự.
+ *         Nếu không có phím nào nhấn, trả về 0.
+ * @return Ký tự tương ứng trong KP_MAP[r][c], hoặc 0 nếu không có phím.
+ */
 static char Keypad_Scan(void)
 {
     for (uint8_t r = 0U; r < 4U; r++)
@@ -240,6 +276,14 @@ static char Keypad_Scan(void)
 /* ===========================================================================
  * Door lock logic
  * ===========================================================================*/
+
+/**
+ * @brief  Khởi tạo hệ thống khoá cửa khi mới bật nguồn.
+ * @detail 1. Đóng khoá (DOOR_CLOSE).
+ *         2. Chạy self-test 1 giây: bật PB4 HIGH và PB11 LOW để kiểm tra
+ *            relay click và khoá điện hoạt động.
+ *         3. Đóng lại, hiển thị màn hình chờ nhập mật khẩu.
+ */
 static void DoorLock_Init(void)
 {
     DOOR_CLOSE();
@@ -263,6 +307,12 @@ static void DoorLock_Init(void)
     OLED_LogMessage("Enter password:");
 }
 
+/**
+ * @brief  Đổi mật khẩu mở cửa sang mật khẩu mới.
+ * @detail Kiểm tra độ dài hợp lệ (1..PWD_MAX_LEN), lưu vào s_password[],
+ *         xóa input buffer, hiển thị thông báo thay đổi thành công 1 giây.
+ * @param  new_pwd  Chuỗi mật khẩu mới (null-terminated).
+ */
 static void DoorLock_SetPassword(const char *new_pwd)
 {
     size_t len;
@@ -288,6 +338,19 @@ static void DoorLock_SetPassword(const char *new_pwd)
     OLED_LogMessage("Enter password:");
 }
 
+/**
+ * @brief  Xử lý một phím được nhấn từ bàn phím.
+ * @detail Luồng xử lý:
+ *         - Phím 0-9: Thêm vào s_input[], hiển thị số trực tiếp lên OLED.
+ *         - Phím '*' (CONFIRM): So sánh s_input với s_password.
+ *             + Đúng: Mở cửa 3 giây (DOOR_OPEN → delay → DOOR_CLOSE), reset fail.
+ *             + Sai:  Tăng s_fail_count.
+ *               · Chưa đủ 5 lần: Hiển thị "WRONG PASSWORD!" + số lần còn lại.
+ *               · Đủ 5 lần: Khoá 30 giây, đếm ngược từng giây lên OLED.
+ *         - Phím '#' (CLEAR): Xóa s_input[], reset màn hình.
+ *         - Phím A,B,C,D: Bỏ qua.
+ * @param  key  Ký tự phím từ Keypad_Scan().
+ */
 static void DoorLock_ProcessKey(char key)
 {
     char buf[PWD_MAX_LEN + 1U];
@@ -412,7 +475,11 @@ static void DoorLock_ProcessKey(char key)
  * MQTT callbacks — called from MQTT_Task() when a message arrives
  * ===========================================================================*/
 
-/** Nhận "door/open" → mở khoá ngay */
+/**
+ * @brief  Callback khi nhận lệnh mở cửa từ MQTT.
+ * @detail Hiển thị "MQTT: Open door", gọi DOOR_OPEN(), delay 3s, DOOR_CLOSE().
+ *         Không kiểm tra mật khẩu — lệnh MQTT được tin tưởng hoàn toàn.
+ */
 static void MQTT_OnDoorOpen(void)
 {
     OLED_LogClear();
@@ -425,7 +492,12 @@ static void MQTT_OnDoorOpen(void)
     OLED_LogMessage("Enter password:");
 }
 
-/** Nhận "door/password" → đổi mật khẩu sang payload */
+/**
+ * @brief  Callback khi nhận lệnh đổi mật khẩu từ MQTT.
+ * @detail Hiển thị mật khẩu mới lên OLED 2 giây để xác nhận,
+ *         sau đó gọi DoorLock_SetPassword() để lưu lại.
+ * @param  new_pwd  Chuỗi mật khẩu mới nhận từ MQTT payload.
+ */
 static void MQTT_OnPassword(const char *new_pwd)
 {
     char line[OLED_LINE_LEN + 1U];
@@ -442,10 +514,23 @@ static void MQTT_OnPassword(const char *new_pwd)
 }
 
 /**
- * Gọi cho MỌI message MQTT nhận được — hiển thị lên OLED.
- * Hỗ trợ 2 format:
- *   1. Text: "OPEN" hoặc "SET_PWD:111111"
- *   2. JSON: {"type":"DOOR","action":"OPEN"}
+ * @brief  Callback tổng hợp — gọi cho MỌI message MQTT nhận được.
+ * @detail Hỗ trợ 2 format payload:
+ *
+ *   1. TEXT format (type & action đều rỗng, value chứa lệnh thô):
+ *      - "OPEN"            → gọi MQTT_OnDoorOpen()
+ *      - "SET_PWD:xxxxxx"  → gọi MQTT_OnPassword("xxxxxx")
+ *      - Khác              → hiển thị "Unknown cmd!"
+ *
+ *   2. JSON format (type/action/value đã được parse bởi mqtt_client.c):
+ *      - type="DOOR", action="OPEN"              → mở cửa
+ *      - type="DOOR", action="SET_PWD", value=xx → đổi mật khẩu
+ *
+ *   Trong cả 2 trường hợp, hiển thị thông tin lên OLED trước khi xử lý.
+ *
+ * @param  type    Giá trị field "type" trong JSON (rỗng nếu text format).
+ * @param  action  Giá trị field "action" trong JSON.
+ * @param  value   Giá trị field "value" trong JSON, hoặc raw payload (text).
  */
 static void MQTT_OnMessage(const char *type, const char *action, const char *value)
 {
@@ -759,3 +844,6 @@ void Error_Handler(void)
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line) {}
 #endif
+
+
+
