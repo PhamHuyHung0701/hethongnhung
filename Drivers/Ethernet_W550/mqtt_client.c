@@ -257,80 +257,231 @@ void MQTT_Task(void)
     uint8_t  broker_ip[] = MQTT_BROKER_IP;
 
     switch (s_state)
-    {
-        /* ---- Offline: reconnect every 5 s -------------------------------- */
-        case MQTT_ST_OFFLINE:
-            if ((now - s_timer) < 5000U) { break; }
-            s_timer = now;
+{
+    /* ============================================================
+     * MQTT_ST_OFFLINE
+     * Trạng thái mất kết nối / chưa kết nối MQTT broker
+     * Nhiệm vụ:
+     * - Cứ mỗi 5 giây thử kết nối lại broker
+     * - Mở socket TCP
+     * - Connect tới MQTT broker
+     * - Gửi MQTT CONNECT packet
+     * ============================================================ */
+    case MQTT_ST_OFFLINE:
+
+        // Nếu chưa đủ 5 giây từ lần thử trước thì không làm gì
+        if ((now - s_timer) < 5000U) {
+            break;
+        }
+
+        // Cập nhật thời điểm bắt đầu thử reconnect
+        s_timer = now;
+
+        // Đóng socket cũ nếu còn tồn tại
+        close(MQTT_SOCKET_NUM);
+
+        // Tạo socket TCP mới cho MQTT
+        // Nếu tạo socket thất bại thì thoát, lần sau thử lại
+        if (socket(MQTT_SOCKET_NUM, Sn_MR_TCP, 0U, 0U) != (int8_t)MQTT_SOCKET_NUM) {
+            break;
+        }
+
+        // Kết nối TCP tới broker MQTT
+        // Nếu connect thất bại thì đóng socket và quay lại OFFLINE
+        if (connect_W5x00(MQTT_SOCKET_NUM, broker_ip, MQTT_BROKER_PORT) != SOCK_OK) {
             close(MQTT_SOCKET_NUM);
-            if (socket(MQTT_SOCKET_NUM, Sn_MR_TCP, 0U, 0U) != (int8_t)MQTT_SOCKET_NUM) { break; }
-            if (connect_W5x00(MQTT_SOCKET_NUM, broker_ip, MQTT_BROKER_PORT) != SOCK_OK) {
-                close(MQTT_SOCKET_NUM); break;
-            }
-            { uint16_t pl = build_connect(); send(MQTT_SOCKET_NUM, s_tx, pl); }
-            s_state = MQTT_ST_WAIT_CONNACK;
+            break;
+        }
+
+        // Build gói MQTT CONNECT rồi gửi lên broker
+        {
+            uint16_t pl = build_connect();
+            send(MQTT_SOCKET_NUM, s_tx, pl);
+        }
+
+        // Sau khi gửi CONNECT, chuyển sang trạng thái chờ CONNACK
+        s_state = MQTT_ST_WAIT_CONNACK;
+
+        // Lưu lại thời điểm bắt đầu chờ CONNACK để timeout
+        s_timer = now;
+        break;
+
+
+    /* ============================================================
+     * MQTT_ST_WAIT_CONNACK
+     * Trạng thái chờ broker phản hồi CONNACK
+     * CONNACK nghĩa là broker đã chấp nhận MQTT CONNECT
+     * ============================================================ */
+    case MQTT_ST_WAIT_CONNACK:
+
+        // Kiểm tra socket TCP còn ESTABLISHED không
+        getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
+
+        // Nếu socket mất kết nối hoặc chờ quá 5 giây thì reset về OFFLINE
+        if (sock_st != SOCK_ESTABLISHED || (now - s_timer) > 5000U) {
+            close(MQTT_SOCKET_NUM);
+            s_state = MQTT_ST_OFFLINE;
             s_timer = now;
             break;
+        }
 
-        /* ---- Wait CONNACK ------------------------------------------------- */
-        case MQTT_ST_WAIT_CONNACK:
-            getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
-            if (sock_st != SOCK_ESTABLISHED || (now - s_timer) > 5000U) {
-                close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now; break;
-            }
-            getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
-            if (avail < 4U) { break; }
-            rlen = recv(MQTT_SOCKET_NUM, s_rx, sizeof(s_rx));
-            if (rlen >= 4 && s_rx[0] == MQTTB_CONNACK && s_rx[3] == 0x00U) {
-                uint16_t pl = build_subscribe(); send(MQTT_SOCKET_NUM, s_tx, pl);
-                s_state = MQTT_ST_WAIT_SUBACK; s_timer = now;
-            } else if (rlen > 0) {
-                close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now;
-            }
+        // Kiểm tra có bao nhiêu byte dữ liệu đang chờ nhận
+        getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
+
+        // Gói CONNACK tối thiểu 4 byte, chưa đủ thì chờ tiếp
+        if (avail < 4U) {
             break;
+        }
 
-        /* ---- Wait SUBACK -------------------------------------------------- */
-        case MQTT_ST_WAIT_SUBACK:
-            getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
-            if (sock_st != SOCK_ESTABLISHED || (now - s_timer) > 5000U) {
-                close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now; break;
-            }
-            getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
-            if (avail < 2U) { break; }
-            rlen = recv(MQTT_SOCKET_NUM, s_rx, sizeof(s_rx));
-            if (rlen >= 2 && s_rx[0] == MQTTB_SUBACK) {
-                s_state = MQTT_ST_ACTIVE; s_ping_timer = now;
-            } else if (rlen > 0) {
-                close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now;
-            }
-            break;
+        // Đọc dữ liệu từ socket
+        rlen = recv(MQTT_SOCKET_NUM, s_rx, sizeof(s_rx));
 
-        /* ---- Active: poll messages + keep-alive --------------------------- */
-        case MQTT_ST_ACTIVE:
-            getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
-            if (sock_st != SOCK_ESTABLISHED) {
-                close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now; break;
-            }
-            if ((now - s_ping_timer) >= (uint32_t)(MQTT_KEEPALIVE_S * 500UL)) {
-                uint8_t ping[2] = { MQTTB_PINGREQ, 0x00U };
-                send(MQTT_SOCKET_NUM, ping, 2U);
-                s_ping_timer = now;
-            }
-            getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
-            if (avail > 0U) {
-                if (avail > (uint16_t)sizeof(s_rx)) { avail = (uint16_t)sizeof(s_rx); }
-                rlen = recv(MQTT_SOCKET_NUM, s_rx, avail);
-                if (rlen > 0 && (s_rx[0] & 0xF0U) == MQTTB_PUBLISH) {
-                    handle_publish((uint16_t)rlen);
-                } else if (rlen < 0) {
-                    close(MQTT_SOCKET_NUM); s_state = MQTT_ST_OFFLINE; s_timer = now;
-                }
-            }
-            break;
+        // Kiểm tra đúng gói CONNACK và return code = 0x00
+        // s_rx[0] == MQTTB_CONNACK: đúng loại packet CONNACK
+        // s_rx[3] == 0x00: broker chấp nhận kết nối
+        if (rlen >= 4 && s_rx[0] == MQTTB_CONNACK && s_rx[3] == 0x00U) {
 
-        default:
+            // Sau khi connect thành công, build gói SUBSCRIBE
+            uint16_t pl = build_subscribe();
+
+            // Gửi yêu cầu subscribe topic command
+            send(MQTT_SOCKET_NUM, s_tx, pl);
+
+            // Chuyển sang trạng thái chờ SUBACK
+            s_state = MQTT_ST_WAIT_SUBACK;
+            s_timer = now;
+        }
+        else if (rlen > 0) {
+            // Có dữ liệu nhưng không phải CONNACK hợp lệ
+            // Coi như lỗi MQTT, đóng socket và reconnect lại
+            close(MQTT_SOCKET_NUM);
             s_state = MQTT_ST_OFFLINE;
+            s_timer = now;
+        }
+        break;
+
+
+    /* ============================================================
+     * MQTT_ST_WAIT_SUBACK
+     * Trạng thái chờ broker phản hồi SUBACK
+     * SUBACK nghĩa là broker đã xác nhận subscribe topic thành công
+     * ============================================================ */
+    case MQTT_ST_WAIT_SUBACK:
+
+        // Kiểm tra socket còn kết nối không
+        getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
+
+        // Nếu mất TCP hoặc quá 5 giây chưa có SUBACK thì reconnect
+        if (sock_st != SOCK_ESTABLISHED || (now - s_timer) > 5000U) {
+            close(MQTT_SOCKET_NUM);
+            s_state = MQTT_ST_OFFLINE;
+            s_timer = now;
             break;
+        }
+
+        // Kiểm tra buffer nhận có dữ liệu chưa
+        getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
+
+        // SUBACK tối thiểu cần 2 byte
+        if (avail < 2U) {
+            break;
+        }
+
+        // Nhận dữ liệu từ socket
+        rlen = recv(MQTT_SOCKET_NUM, s_rx, sizeof(s_rx));
+
+        // Nếu đúng là packet SUBACK
+        if (rlen >= 2 && s_rx[0] == MQTTB_SUBACK) {
+
+            // Subscribe thành công, chuyển sang trạng thái hoạt động chính
+            s_state = MQTT_ST_ACTIVE;
+
+            // Khởi tạo timer để gửi PINGREQ định kỳ
+            s_ping_timer = now;
+        }
+        else if (rlen > 0) {
+            // Có dữ liệu nhưng không phải SUBACK hợp lệ
+            // Reset kết nối
+            close(MQTT_SOCKET_NUM);
+            s_state = MQTT_ST_OFFLINE;
+            s_timer = now;
+        }
+        break;
+
+
+    /* ============================================================
+     * MQTT_ST_ACTIVE
+     * Trạng thái MQTT đã kết nối và subscribe thành công
+     * Nhiệm vụ:
+     * - Kiểm tra socket còn sống
+     * - Gửi PINGREQ giữ kết nối
+     * - Nhận message từ broker
+     * - Nếu là PUBLISH thì xử lý command
+     * ============================================================ */
+    case MQTT_ST_ACTIVE:
+
+        // Kiểm tra TCP socket còn ESTABLISHED không
+        getsockopt(MQTT_SOCKET_NUM, SO_STATUS, &sock_st);
+
+        // Nếu socket mất kết nối thì quay lại OFFLINE để reconnect
+        if (sock_st != SOCK_ESTABLISHED) {
+            close(MQTT_SOCKET_NUM);
+            s_state = MQTT_ST_OFFLINE;
+            s_timer = now;
+            break;
+        }
+
+        // MQTT keep-alive:
+        // Gửi PINGREQ định kỳ để broker biết client vẫn còn sống
+        // Ở đây gửi sau một nửa thời gian keepalive
+        if ((now - s_ping_timer) >= (uint32_t)(MQTT_KEEPALIVE_S * 500UL)) {
+            uint8_t ping[2] = { MQTTB_PINGREQ, 0x00U };
+
+            // Gửi packet PINGREQ gồm 2 byte
+            send(MQTT_SOCKET_NUM, ping, 2U);
+
+            // Cập nhật thời điểm gửi ping gần nhất
+            s_ping_timer = now;
+        }
+
+        // Kiểm tra có dữ liệu MQTT từ broker gửi xuống không
+        getsockopt(MQTT_SOCKET_NUM, SO_RECVBUF, &avail);
+
+        if (avail > 0U) {
+
+            // Nếu dữ liệu nhiều hơn buffer thì chỉ đọc tối đa bằng size buffer
+            if (avail > (uint16_t)sizeof(s_rx)) {
+                avail = (uint16_t)sizeof(s_rx);
+            }
+
+            // Nhận dữ liệu từ socket
+            rlen = recv(MQTT_SOCKET_NUM, s_rx, avail);
+
+            // Nếu nhận được packet PUBLISH
+            // MQTT PUBLISH có high nibble là 0x30
+            if (rlen > 0 && (s_rx[0] & 0xF0U) == MQTTB_PUBLISH) {
+
+                // Xử lý nội dung message MQTT
+                // Ví dụ: OPEN, SET_PWD:111111
+                handle_publish((uint16_t)rlen);
+            }
+            else if (rlen < 0) {
+                // Lỗi khi recv thì đóng socket và reconnect
+                close(MQTT_SOCKET_NUM);
+                s_state = MQTT_ST_OFFLINE;
+                s_timer = now;
+            }
+        }
+        break;
+
+
+    /* ============================================================
+     * Trường hợp state bị sai giá trị
+     * Reset về OFFLINE cho an toàn
+     * ============================================================ */
+    default:
+        s_state = MQTT_ST_OFFLINE;
+        break;
     }
 }
 
