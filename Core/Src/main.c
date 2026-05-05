@@ -57,7 +57,9 @@
 #define LOCK_OPEN_MS    3000U
 
 /* Password */
-#define PWD_MAX_LEN     16U
+#define PWD_MAX_LEN         16U
+#define LOCKOUT_MAX_FAIL    5U      /* sai tối đa 5 lần */
+#define LOCKOUT_TIME_S      30U     /* khoá 30 giây */
 
 /* OLED log */
 #define OLED_LINES      6U
@@ -86,9 +88,10 @@ static char    oled_lines[OLED_LINES][OLED_LINE_LEN + 1U];
 static uint8_t oled_ready = 0U;
 
 /* Door lock state */
-static char    s_password[PWD_MAX_LEN + 1U] = "123456";   /* default */
+static char    s_password[PWD_MAX_LEN + 1U] = "111111";   /* default */
 static char    s_input[PWD_MAX_LEN + 1U]    = {0};
 static uint8_t s_input_len                  = 0U;
+static uint8_t s_fail_count                 = 0U;  /* số lần nhập sai */
 
 /* USER CODE END PV */
 
@@ -272,17 +275,19 @@ static void DoorLock_SetPassword(const char *new_pwd)
 
 static void DoorLock_ProcessKey(char key)
 {
-    char stars[PWD_MAX_LEN + 1U];
+    char buf[PWD_MAX_LEN + 1U];
 
     if (key == 0) { return; }
 
-    /* '#' — confirm / enter */
-    if (key == '#')
+    /* '*' — confirm / enter */
+    if (key == '*')
     {
         s_input[s_input_len] = '\0';
 
         if (strcmp(s_input, s_password) == 0)
         {
+            /* Đúng mật khẩu — reset bộ đếm sai */
+            s_fail_count = 0U;
             OLED_LogClear();
             OLED_LogMessage("** ACCESS OK **");
             OLED_LogMessage("Door opening...");
@@ -295,11 +300,65 @@ static void DoorLock_ProcessKey(char key)
         }
         else
         {
+            /* Sai mật khẩu */
+            s_fail_count++;
             OLED_LogClear();
-            OLED_LogMessage("WRONG PASSWORD!");
-            HAL_Delay(1500);
-            OLED_LogClear();
-            OLED_LogMessage("Enter password:");
+
+            if (s_fail_count >= LOCKOUT_MAX_FAIL)
+            {
+                /* ---- Đã sai đủ 5 lần → khoá 30 giây đếm ngược ---- */
+                s_fail_count = 0U;
+
+                for (uint8_t sec = LOCKOUT_TIME_S; sec > 0U; sec--)
+                {
+                    char cnt[6]; /* "30s\0" */
+                    uint8_t pos = 0U;
+                    if (sec >= 10U) { cnt[pos++] = (char)('0' + sec / 10U); }
+                    cnt[pos++] = (char)('0' + sec % 10U);
+                    cnt[pos++] = 's';
+                    cnt[pos]   = '\0';
+
+                    /* Viết trực tiếp từng dòng cố định — không scroll */
+                    ssd1306_Fill(Black);
+
+                    ssd1306_SetCursor(0,  0); ssd1306_WriteString("==================", Font_7x10, White);
+                    ssd1306_SetCursor(7, 11); ssd1306_WriteString("** LOCKED **",       Font_7x10, White);
+                    ssd1306_SetCursor(0, 22); ssd1306_WriteString("==================", Font_7x10, White);
+                    ssd1306_SetCursor(4, 33); ssd1306_WriteString("Too many fails",     Font_7x10, White);
+
+                    /* Căn giữa số đếm ngược */
+                    uint8_t cw  = (uint8_t)(pos * 7U);          /* pixel width */
+                    uint8_t cx  = (uint8_t)((128U - cw) / 2U);
+                    ssd1306_SetCursor(cx, 44); ssd1306_WriteString(cnt, Font_7x10, White);
+
+                    ssd1306_SetCursor(0, 55); ssd1306_WriteString("==================", Font_7x10, White);
+
+                    ssd1306_UpdateScreen();
+                    HAL_Delay(1000);
+                }
+
+                OLED_LogClear();
+                OLED_LogMessage("== Door Lock ==");
+                OLED_LogMessage("Enter password:");
+            }
+            else
+            {
+                /* Còn lần thử — hiển thị số lần sai còn lại */
+                char line[OLED_LINE_LEN + 1U];
+                OLED_LogMessage("WRONG PASSWORD!");
+
+                uint8_t remain = LOCKOUT_MAX_FAIL - s_fail_count;
+                line[0] = '\0';
+                strncat(line, "Tries left: ", OLED_LINE_LEN);
+                uint8_t pos = (uint8_t)strlen(line);
+                line[pos++] = (char)('0' + remain);
+                line[pos]   = '\0';
+                OLED_LogMessage(line);
+
+                HAL_Delay(1500);
+                OLED_LogClear();
+                OLED_LogMessage("Enter password:");
+            }
         }
 
         memset(s_input, 0, sizeof(s_input));
@@ -307,8 +366,8 @@ static void DoorLock_ProcessKey(char key)
         return;
     }
 
-    /* '*' — clear input */
-    if (key == '*')
+    /* '#' — clear input */
+    if (key == '#')
     {
         memset(s_input, 0, sizeof(s_input));
         s_input_len = 0U;
@@ -321,16 +380,16 @@ static void DoorLock_ProcessKey(char key)
     /* Ignore A, B, C, D */
     if (key < '0' || key > '9') { return; }
 
-    /* Append digit and show asterisks */
+    /* Append digit and show input */
     if (s_input_len < PWD_MAX_LEN)
     {
         s_input[s_input_len++] = key;
-        for (uint8_t i = 0U; i < s_input_len; i++) { stars[i] = '*'; }
-        stars[s_input_len] = '\0';
+        s_input[s_input_len]   = '\0';
+        strncpy(buf, s_input, PWD_MAX_LEN);
 
         OLED_LogClear();
         OLED_LogMessage("Enter password:");
-        OLED_LogMessage(stars);
+        OLED_LogMessage(buf);
     }
 }
 
