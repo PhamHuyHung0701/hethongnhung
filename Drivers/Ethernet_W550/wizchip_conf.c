@@ -1,4 +1,29 @@
 //****************************************************************************/
+/**
+ * @file   wizchip_conf.c
+ * @brief  Thư viện cấu hình và điều khiển chip W5500 của WIZnet (KHÔNG SỬA).
+ *
+ * @detail File này là driver gốc của WIZnet ioLibrary, cung cấp:
+ *   - Đăng ký callback SPI (CS, ReadByte, WriteByte, Burst).
+ *   - ctlwizchip()  : điều khiển chip (init, reset, PHY link, interrupt...).
+ *   - ctlnetwork()  : đọc/ghi thông tin mạng (IP, GW, SN, MAC, DNS).
+ *   - Các hàm I/O nội bộ: wizchip_write/read, wizchip_bus_write/read
+ *     (được gọi tự động bởi tầng socket bên trên).
+ *
+ * Luồng gọi trong project này:
+ *   W5500_Init() [wizchip_port.c]
+ *     └─► reg_wizchip_cs_cbfunc()      — đăng ký CS select/unselect
+ *     └─► reg_wizchip_spi_cbfunc()     — đăng ký ReadByte/WriteByte
+ *     └─► reg_wizchip_spiburst_cbfunc()— đăng ký burst read/write
+ *     └─► ctlwizchip(CW_INIT_WIZCHIP)  — khởi tạo chip, cấp phát socket buffer
+ *     └─► ctlnetwork(CN_SET_NETINFO)   — ghi IP tĩnh vào chip
+ *
+ * @note   KHÔNG CHỈNH SỬA file này. Mọi tùy chỉnh hardware đặt trong
+ *         wizchip_port.c.
+ *
+ * @version 1.0.1  (WIZnet original)
+ * @author  MidnightCow / WIZnet Co., LTD.
+ */
 //!
 //! \file wizchip_conf.c
 //! \brief WIZCHIP Config Header File.

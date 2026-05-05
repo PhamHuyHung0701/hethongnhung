@@ -1,3 +1,27 @@
+/**
+ * @file   wizchip_port.c
+ * @brief  Lớp port (HAL bridge) kết nối STM32 SPI với chip W5500.
+ *
+ * @detail File này đóng vai trò "glue layer" giữa HAL STM32 và thư viện WIZnet:
+ *   - Cấu hình địa chỉ mạng tĩnh (IP, GW, SN, MAC, DNS).
+ *   - Cung cấp các hàm callback SPI (Select/Unselect, Read/Write Byte, Burst).
+ *   - W5500_Init(): khởi tạo toàn bộ chip W5500 theo trình tự chuẩn.
+ *   - W5500_Diag(): hiển thị thông tin chẩn đoán lên OLED qua log callback.
+ *
+ * Cấu hình mặc định (chỉnh tại đây):
+ *   IP  : 192.168.137.2
+ *   GW  : 192.168.137.1
+ *   SN  : 255.255.255.0
+ *   MAC : AA:BB:CC:DD:EE:FF
+ *   DNS : 8.8.8.8
+ *   DHCP: Tắt (USE_DHCP = 0)
+ *
+ * Hardware mapping:
+ *   SPI1  (hspi1)  — giao tiếp dữ liệu với W5500
+ *   PA4           — W5500 CS (Chip Select, active LOW)
+ *   PB0           — W5500 RST (Reset, active LOW)
+ */
+
 /*
  * wizchip_port.c
  */
@@ -38,13 +62,30 @@ static void W5500_Log(const char *message)
 }
 
 // SPI transmit/receive
-void W5500_Select(void)   { 
+/**
+ * @brief  Kéo chân CS (PA4) xuống LOW để chọn chip W5500.
+ * @detail Gọi trước mỗi chuỗi SPI transaction. Được đăng ký vào thư viện
+ *         WIZnet qua reg_wizchip_cs_cbfunc().
+ */
+void W5500_Select(void)   {
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET); 
 }
-void W5500_Unselect(void) { 
+
+/**
+ * @brief  Kéo chân CS (PA4) lên HIGH để bỏ chọn chip W5500.
+ * @detail Gọi sau mỗi chuỗi SPI transaction. Được đăng ký vào thư viện
+ *         WIZnet qua reg_wizchip_cs_cbfunc().
+ */
+void W5500_Unselect(void) {
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); 
 }
 
+/**
+ * @brief  Đọc 1 byte từ W5500 qua SPI (full-duplex).
+ * @detail Gửi dummy byte 0xFF, nhận 1 byte dữ liệu từ W5500.
+ *         Được đăng ký qua reg_wizchip_spi_cbfunc().
+ * @return Byte dữ liệu nhận được từ W5500.
+ */
 uint8_t W5500_ReadByte(void)
 {
     uint8_t rx;
@@ -53,27 +94,58 @@ uint8_t W5500_ReadByte(void)
     return rx;
 }
 
+/**
+ * @brief  Ghi 1 byte vào W5500 qua SPI (full-duplex).
+ * @detail Gửi 1 byte, byte nhận về bị bỏ qua.
+ *         Được đăng ký qua reg_wizchip_spi_cbfunc().
+ * @param  byte  Byte dữ liệu cần ghi.
+ */
 void W5500_WriteByte(uint8_t byte)
 {
     uint8_t rx;
     HAL_SPI_TransmitReceive(&W5500_SPI, &byte, &rx, 1, HAL_MAX_DELAY);
 }
 
+/**
+ * @brief  Đọc nhiều byte liên tiếp từ W5500 qua SPI (burst read).
+ * @detail Sử dụng HAL_SPI_Receive() để đọc khối dữ liệu lớn hiệu quả hơn.
+ *         Được đăng ký qua reg_wizchip_spiburst_cbfunc().
+ * @param  pBuf  Con trỏ buffer nhận dữ liệu.
+ * @param  len   Số byte cần đọc.
+ */
 void W5500_ReadBurst(uint8_t* pBuf, uint16_t len)
 {
     HAL_SPI_Receive(&W5500_SPI, pBuf, len, HAL_MAX_DELAY);
 }
 
+/**
+ * @brief  Ghi nhiều byte liên tiếp vào W5500 qua SPI (burst write).
+ * @detail Sử dụng HAL_SPI_Transmit() để ghi khối dữ liệu lớn hiệu quả hơn.
+ *         Được đăng ký qua reg_wizchip_spiburst_cbfunc().
+ * @param  pBuf  Con trỏ buffer chứa dữ liệu cần ghi.
+ * @param  len   Số byte cần ghi.
+ */
 void W5500_WriteBurst(uint8_t* pBuf, uint16_t len)
 {
     HAL_SPI_Transmit(&W5500_SPI, pBuf, len, HAL_MAX_DELAY);
 }
 
+/**
+ * @brief  Đăng ký hàm callback để ghi log ra OLED.
+ * @detail Hàm W5500_Log() nội bộ sẽ gọi callback này mỗi khi cần in thông báo.
+ *         Thường truyền vào OLED_LogMessage từ main.c.
+ * @param  callback  Con trỏ hàm kiểu void(*)(const char*).
+ */
 void W5500_SetLogCallback(W5500_LogCallback callback)
 {
     w5500_log_callback = callback;
 }
 
+/**
+ * @brief  Đọc version register của W5500.
+ * @detail Giá trị đúng là 0x04. Dùng để xác nhận giao tiếp SPI hoạt động.
+ * @return Version byte (0x04 nếu chip W5500 hợp lệ).
+ */
 uint8_t W5500_GetVersion(void)
 {
     return getVERSIONR();
@@ -98,6 +170,22 @@ void Callback_IPConflict(void) {
 #define DNS_SOCKET	  6  // 2nd last socket
 uint8_t DNS_buffer[512];
 
+/**
+ * @brief  Khởi tạo toàn bộ chip W5500 theo trình tự chuẩn.
+ * @detail Thực hiện các bước:
+ *   1. Deassert CS, đảm bảo bus sạch.
+ *   2. Reset phần cứng: kéo PB0 LOW 100ms rồi HIGH, chờ 500ms ổn định.
+ *   3. Đăng ký 4 callback SPI vào thư viện WIZnet.
+ *   4. ctlwizchip(CW_INIT_WIZCHIP): khởi tạo chip, phân bổ 2KB/socket × 8.
+ *   5. ctlnetwork(CN_SET_NETINFO): nạp địa chỉ mạng tĩnh vào chip.
+ *   6. Test CS: kéo PA4 LOW 2s để kiểm tra LED (debug).
+ *   7. Đọc version, so sánh với 0x04.
+ *   8. Đọc trạng thái PHY link.
+ * @return  0  thành công.
+ *         -1  lỗi khởi tạo chip (ctlwizchip thất bại).
+ *         -2  version không khớp (không phải W5500).
+ *         -3  không đọc được PHY link.
+ */
 int W5500_Init(void)
 {
     uint8_t memsize[2][8] = {{2,2,2,2,2,2,2,2},{2,2,2,2,2,2,2,2}};
@@ -189,11 +277,13 @@ static void fmt_ip(char *buf, uint8_t max, const char *prefix, const uint8_t *ip
 }
 
 /**
- * W5500_Diag — hiển thị chẩn đoán lên OLED qua log callback:
- *   W5500 v:04 OK / ERR
- *   PHY: UP / DOWN
- *   IP: 192.168.x.x
- *   GW: 192.168.x.x
+ * @brief  Hiển thị thông tin chẩn đoán W5500 lên OLED qua log callback.
+ * @detail In ra 4 dòng thông tin:
+ *   - "W5500 v:04 OK" hoặc "W5500 v:XX ERR" (version).
+ *   - "PHY: UP" hoặc "PHY: DOWN" (trạng thái kết nối vật lý).
+ *   - "IP:192.168.x.x" (địa chỉ IP đã cấu hình).
+ *   - "GW:192.168.x.x" (default gateway).
+ *         Thường gọi sau W5500_Init() để xác nhận kết nối.
  */
 void W5500_Diag(void)
 {

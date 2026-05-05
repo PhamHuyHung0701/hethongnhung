@@ -1,10 +1,36 @@
 /**
+ * @file   mqtt_client.c
+ * @brief  MQTT 3.1.1 client tối giản — W5500 socket, single topic subscribe.
+ *
+ * @detail Triển khai MQTT client theo state machine 4 trạng thái:
+ *
+ *   OFFLINE ──5s──► WAIT_CONNACK ──► WAIT_SUBACK ──► ACTIVE
+ *      ▲                                                │
+ *      └──────────── mất kết nối / timeout ────────────┘
+ *
+ *   - OFFLINE      : Chờ 5 giây rồi mở socket TCP và gửi CONNECT.
+ *   - WAIT_CONNACK : Chờ gói CONNACK từ broker (timeout 5s).
+ *   - WAIT_SUBACK  : Gửi SUBSCRIBE, chờ SUBACK (timeout 5s).
+ *   - ACTIVE       : Nhận PUBLISH, gửi PINGREQ định kỳ (keep-alive).
+ *
+ * Tất cả xử lý không blocking — gọi MQTT_Task() trong main loop mỗi 10ms.
+ *
+ * Cấu hình (định nghĩa trong mqtt_client.h):
+ *   MQTT_BROKER_IP    — IP broker (mảng 4 byte)
+ *   MQTT_BROKER_PORT  — Port broker (1883)
+ *   MQTT_CLIENT_ID    — Client ID
+ *   MQTT_TOPIC_CMD    — Topic subscribe nhận lệnh
+ *   MQTT_KEEPALIVE_S  — Thời gian keep-alive (giây)
+ *   MQTT_SOCKET_NUM   — Socket W5500 dùng cho MQTT (0-7)
+ *
+ * Payload hỗ trợ 2 format:
+ *   JSON : {"type":"DOOR","action":"OPEN"}
+ *   TEXT : "OPEN" hoặc "SET_PWD:111111"
+ */
+
+/**
  * @file  mqtt_client.c
  * @brief MQTT 3.1.1 client — W5500 socket, JSON payload, single topic
- *
- *  State machine:
- *   OFFLINE  ──► WAIT_CONNACK ──► WAIT_SUBACK ──► ACTIVE
- *   ACTIVE   ──► OFFLINE  (auto-reconnect on link loss)
  */
 
 #include "mqtt_client.h"
@@ -178,6 +204,14 @@ static void handle_publish(uint16_t pkt_len)
 /* =========================================================================
  * Public API
  * ========================================================================= */
+/**
+ * @brief  Khởi tạo MQTT client, đăng ký 3 callback xử lý sự kiện.
+ * @detail Lưu các callback vào biến static, đặt trạng thái về OFFLINE.
+ *         Phải gọi trước MQTT_Task() trong main loop.
+ * @param  door_cb  Callback khi nhận lệnh mở cửa (type=DOOR, action=OPEN).
+ * @param  pwd_cb   Callback khi nhận lệnh đổi mật khẩu (action=SET_PWD).
+ * @param  msg_cb   Callback hiển thị MỌI message MQTT lên OLED.
+ */
 void MQTT_Init(MQTT_DoorOpenCb door_cb,
                MQTT_PasswordCb pwd_cb,
                MQTT_MessageCb  msg_cb)
@@ -189,6 +223,31 @@ void MQTT_Init(MQTT_DoorOpenCb door_cb,
     s_timer   = 0U;
 }
 
+/**
+ * @brief  Vòng lặp xử lý MQTT — gọi liên tục trong main loop (mỗi ~10ms).
+ * @detail State machine không blocking:
+ *
+ *   OFFLINE:
+ *     - Chờ 5 giây, mở socket TCP (Sn_MR_TCP).
+ *     - Kết nối tới broker_ip:MQTT_BROKER_PORT.
+ *     - Gửi gói CONNECT, chuyển sang WAIT_CONNACK.
+ *
+ *   WAIT_CONNACK:
+ *     - Kiểm tra socket còn ESTABLISHED và chưa timeout 5s.
+ *     - Đợi ít nhất 4 byte trong buffer recv.
+ *     - Nhận CONNACK (0x20), kiểm tra return code = 0x00.
+ *     - Gửi SUBSCRIBE, chuyển sang WAIT_SUBACK.
+ *
+ *   WAIT_SUBACK:
+ *     - Kiểm tra socket còn ESTABLISHED và chưa timeout 5s.
+ *     - Nhận SUBACK (0x90), chuyển sang ACTIVE.
+ *
+ *   ACTIVE:
+ *     - Kiểm tra socket còn ESTABLISHED.
+ *     - Gửi PINGREQ (0xC0) mỗi MQTT_KEEPALIVE_S/2 giây.
+ *     - Nhận gói dữ liệu, nếu là PUBLISH (0x3x) → gọi handle_publish().
+ *     - Nếu recv lỗi → quay về OFFLINE với auto-reconnect.
+ */
 void MQTT_Task(void)
 {
     uint32_t now         = HAL_GetTick();
